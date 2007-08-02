@@ -28,8 +28,10 @@
 #include <stdbool.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 
+#include "crc.h"
 
 // Report an error and terminate:
 
@@ -38,6 +40,14 @@ static void fatal(const char* msg)
   fputs(msg,stderr);
   fputc('\n',stderr);
   exit(1);
+}
+
+// Report a warning and continue:
+
+static void warning(const char* msg)
+{
+  fputs(msg,stderr);
+  fputc('\n',stderr);
 }
 
 
@@ -141,8 +151,9 @@ struct fis_image_desc {
 
 static void dump_desc(FILE* f, const struct fis_image_desc* d)
 {
-  fprintf(f,"%16s: addr = 0x%08x, size = 0x%08x\n",
-             d->name,     d->flash_base, d->size);
+  fprintf(f,"%16s: addr = 0x%08x, size = 0x%08x, entry = 0x%08x, length = 0x%08x, cksum = 0x%08x\n",
+	  d->name, d->flash_base, d->size,
+	  d->entry_point, d->data_length, d->file_cksum);
   for (unsigned int i=0; i<(sizeof(d->skips)/4); ++i) {
     if (d->skips[i]==0x736b6970 || d->skips[i]==0x70696b73) { // "skip"
       uint32_t offset = d->skips[i+1];
@@ -357,6 +368,8 @@ static void load_dir(int fd, int offset, int* size_p, bool swap_endianness,
       }
       dir_append(dir,d);
     }
+    else if (d->name[1]==0xff) break;
+
   }
 }
 
@@ -423,7 +436,7 @@ static void check_overlap(const dir_t dir, uint32_t addr, uint32_t size)
   FOR_EACH_DIR_ENTRY(dir,i) {
     if (addr<(get(i)->flash_base+get(i)->size)
         && end_addr>get(i)->flash_base) {
-      fatal("New partition overlaps existing partitions");
+      warning("New partition overlaps existing partitions");
     }
   }
 }
@@ -475,6 +488,27 @@ static void fis_create(const char* device, int offset, int size, bool swap_endia
           break;
         }
       }
+    } else if (strcmp(arg,"-e")==0) {
+      if (i==argc-1) {
+        fatal("argumnet missing for -e");
+      }
+      ++i;
+      d->entry_point = str_to_int_maybe_hex(argv[i]);
+    } else if (strcmp(arg,"-c")==0) {
+      if (i==argc-1) {
+        fatal("argumnet missing for -c");
+      }
+      ++i;
+      char* file = argv[i];
+      int fd;
+      struct stat file_stat;
+      CHECK(fd=open(file,O_RDONLY),-1);
+      CHECK(fstat(fd,&file_stat),-1);
+      d->data_length=file_stat.st_size;
+      uint8_t *data;
+      CHECK(data=mmap(0,d->data_length,PROT_READ,MAP_PRIVATE,fd,0),MAP_FAILED);
+      d->file_cksum=crc32(data,d->data_length);
+      munmap(data,d->data_length);
     } else {
       fputs("Unrecognised option '",stderr);
       fputs(arg,stderr);
@@ -526,7 +560,7 @@ static void usage()
   fputs("Usage:\n"
         "  fis [options] list\n"
         "  fis [options] init\n"
-        "  fis [options] create -f address -l size -n name\n"
+        "  fis [options] create -f address -l size -n name -e entry -c contents\n"
         "  fis [options] delete name\n"
         "Options:\n"
         "  -d device    specify /dev/mtd* device containing directory\n"
