@@ -443,17 +443,52 @@ static void check_overlap(const dir_t dir, uint32_t addr, uint32_t size)
 
 
 static void fis_create(const char* device, int offset, int size, bool swap_endianness,
-                       int argc, char* argv[])
+                       char *name, int argc, char* argv[])
 {
-  struct fis_image_desc* d = chk_malloc(sizeof(struct fis_image_desc));
-  d->mem_base = 0;
-  d->entry_point = 0;
-  d->data_length = 0;
-  for (unsigned int i=0; i<(sizeof(d->skips)/4); ++i) {
-    d->skips[i] = 0;
+  struct fis_image_desc* existing = NULL;
+  struct fis_image_desc* d = NULL;
+
+  int fd;
+  CHECK(fd=open(device,O_RDWR),-1);
+  dir_t dir;
+  load_dir(fd,offset,&size,swap_endianness,&dir);
+
+  /* Search for an existing partition of this name. */
+  FOR_EACH_DIR_ENTRY(dir,i) {
+    char* this_name = get(i)->name;
+    if (strcmp(this_name,name)==0) {
+      existing = get(i);
+      break;
+    }
   }
-  d->desc_cksum = 0;
-  d->file_cksum = 0;
+
+  /* If no existing partition found, then create a new one. */
+  if (existing == NULL) {
+    d = chk_malloc(sizeof(struct fis_image_desc));
+
+    for (int j=0; j<16; j++) {
+      char c = name[j];
+      d->name[j] = c;
+      if (!c) {
+	for (; j<16; ++j) {
+	  d->name[j]=0;
+	}
+	break;
+      }
+    }
+
+    d->mem_base = 0;
+    d->entry_point = 0;
+    d->data_length = 0;
+    for (unsigned int i=0; i<(sizeof(d->skips)/4); ++i) {
+      d->skips[i] = 0;
+    }
+    d->desc_cksum = 0;
+    d->file_cksum = 0;
+  }
+  else {
+    d = existing;
+  }
   
   for (int i=0; i<argc; ++i) {
     char* arg=argv[i];
@@ -469,25 +504,6 @@ static void fis_create(const char* device, int offset, int size, bool swap_endia
       }
       ++i;
       d->flash_base = str_to_int_maybe_hex(argv[i]);
-    } else if (strcmp(arg,"-n")==0) {
-      if (i==argc-1) {
-        fatal("argumnet missing for -n");
-      }
-      ++i;
-      char* name = argv[i];
-      if (strlen(name)>=16) {
-        fatal("name too long, max 16 chars including terminating null");
-      }
-      for (int j=0; j<16; j++) {
-        char c = name[j];
-        d->name[j] = c;
-        if (!c) {
-          for (; j<16; ++j) {
-            d->name[j]=0;
-          }
-          break;
-        }
-      }
     } else if (strcmp(arg,"-e")==0) {
       if (i==argc-1) {
         fatal("argumnet missing for -e");
@@ -517,19 +533,19 @@ static void fis_create(const char* device, int offset, int size, bool swap_endia
     }
   }
 
-  int fd;
-  CHECK(fd=open(device,O_RDWR),-1);
-  dir_t dir;
-  load_dir(fd,offset,&size,swap_endianness,&dir);
-  check_overlap(dir,d->flash_base,d->size);
-  iter_t after = NULL;
-  FOR_EACH_DIR_ENTRY(dir,i) {
-    if (get(i)->flash_base > d->flash_base) {
-      break;
+  /* Insert the new entry if it didn't already exist. */
+  if (existing == NULL) {
+    check_overlap(dir,d->flash_base,d->size);
+    iter_t after = NULL;
+    FOR_EACH_DIR_ENTRY(dir,i) {
+      if (get(i)->flash_base > d->flash_base) {
+	break;
+      }
+      after = i;
     }
-    after = i;
+    dir_insert(&dir,after,d);
   }
-  dir_insert(&dir,after,d);
+
   save_dir(fd,offset,size,swap_endianness,dir);
 }
 
@@ -560,7 +576,7 @@ static void usage()
   fputs("Usage:\n"
         "  fis [options] list\n"
         "  fis [options] init\n"
-        "  fis [options] create -f address -l size -n name -e entry -c contents\n"
+        "  fis [options] create name [-f address] [-l size] [-e entry] [-r ram-addr] [-c contents]\n"
         "  fis [options] delete name\n"
         "Options:\n"
         "  -d device    specify /dev/mtd* device containing directory\n"
@@ -627,8 +643,16 @@ int main(int argc, char* argv[])
         check_dev(device);
         fis_init(device,offset,size);
       } else if (strcmp(arg,"create")==0) {
+        if (i==argc-1) {
+          fatal("name argument missing");
+        }
+        ++i;
+        char* name = argv[i];
+	if (strlen(name)>=16) {
+	  fatal("name too long, max 16 chars including terminating null");
+	}
         check_dev(device);
-        fis_create(device,offset,size,swap_endianness,
+        fis_create(device,offset,size,swap_endianness,name,
                    argc-i-1,&argv[i+1]);
         break;
       } else if (strcmp(arg,"delete")==0) {
