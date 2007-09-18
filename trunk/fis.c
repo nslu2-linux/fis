@@ -510,6 +510,12 @@ static void fis_create(const char* device, int offset, int size, bool swap_endia
       }
       ++i;
       d->entry_point = str_to_int_maybe_hex(argv[i]);
+    } else if (strcmp(arg,"-r")==0) {
+      if (i==argc-1) {
+        fatal("argumnet missing for -r");
+      }
+      ++i;
+      d->mem_base = str_to_int_maybe_hex(argv[i]);
     } else if (strcmp(arg,"-c")==0) {
       if (i==argc-1) {
         fatal("argumnet missing for -c");
